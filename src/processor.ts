@@ -1,129 +1,130 @@
-import {lookupArchive} from "@subsquid/archive-registry"
-import * as ss58 from "@subsquid/ss58"
-import {BatchContext, BatchProcessorItem, SubstrateBatchProcessor} from "@subsquid/substrate-processor"
-import {Store, TypeormDatabase} from "@subsquid/typeorm-store"
-import {In} from "typeorm"
-import {Account, Transfer} from "./model"
-import {BalancesTransferEvent} from "./types/events"
+import {
+  assertNotNull,
+  BatchContext,
+  BatchProcessorItem,
+  SubstrateBatchProcessor,
+} from "@subsquid/substrate-processor";
+import { Store, TypeormDatabase } from "@subsquid/typeorm-store";
+import { In } from "typeorm";
+import { AddedMsg } from "./model";
+import { decodeChatMsg } from "./program";
 
+const CHAT_PROGRAM_ID =
+  "0x739a09d43c2105b712e2c5e43008616b8c47c9ed73c8aa1d941e9fc8ea9ed6e4";
 
 const processor = new SubstrateBatchProcessor()
-    .setDataSource({
-        // Lookup archive by the network name in the Subsquid registry
-        //archive: lookupArchive("kusama", {release: "FireSquid"})
+  .setDataSource({
+    archive: "https://gear-testnet.archive.subsquid.io/graphql",
+  })
+  .setBlockRange({ from: 2_000_000 })
+  .addGearMessageEnqueued(CHAT_PROGRAM_ID, {
+    data: {
+      event: {
+        args: true,
+        phase: true,
+        call: { args: true },
+      },
+    },
+  })
+  .addGearUserMessageSent(CHAT_PROGRAM_ID, {
+    data: {
+      event: { args: true },
+    },
+  });
 
-        // Use archive created by archive/docker-compose.yml
-        archive: lookupArchive('kusama', {release: 'FireSquid'} )
-    })
-    .addEvent('Balances.Transfer', {
-        data: {
-            event: {
-                args: true,
-                extrinsic: {
-                    hash: true,
-                    fee: true
-                }
-            }
-        }
-    } as const)
+type Item = BatchProcessorItem<typeof processor>;
+type Ctx = BatchContext<Store, Item>;
 
+processor.run(new TypeormDatabase(), async (ctx) => {
+  let { messages } = await extractMessages(ctx);
 
-type Item = BatchProcessorItem<typeof processor>
-type Ctx = BatchContext<Store, Item>
-
-
-processor.run(new TypeormDatabase(), async ctx => {
-    let transfersData = getTransfers(ctx)
-
+  /*
     let accountIds = new Set<string>()
-    for (let t of transfersData) {
-        accountIds.add(t.from)
-        accountIds.add(t.to)
-    }
-
-    let accounts = await ctx.store.findBy(Account, {id: In([...accountIds])}).then(accounts => {
-        return new Map(accounts.map(a => [a.id, a]))
+    messages.forEach(rec => {
+        accountIds.add(rec.by)
     })
 
-    let transfers: Transfer[] = []
+    let accounts = await ctx.store.findBy(Account, {
+        id: In([...accountIds])
+    }).then(accounts => {
+        return new Map(accounts.map(account => [account.id, account]))
+    })
 
-    for (let t of transfersData) {
-        let {id, blockNumber, timestamp, extrinsicHash, amount, fee} = t
-
-        let from = getAccount(accounts, t.from)
-        let to = getAccount(accounts, t.to)
-
-        transfers.push(new Transfer({
-            id,
-            blockNumber,
-            timestamp,
-            extrinsicHash,
-            from,
-            to,
-            amount,
-            fee
-        }))
-    }
-
-    await ctx.store.save(Array.from(accounts.values()))
-    await ctx.store.insert(transfers)
-})
-
-
-interface TransferEvent {
-    id: string
-    blockNumber: number
-    timestamp: Date
-    extrinsicHash?: string
-    from: string
-    to: string
-    amount: bigint
-    fee?: bigint
-}
-
-
-function getTransfers(ctx: Ctx): TransferEvent[] {
-    let transfers: TransferEvent[] = []
-    for (let block of ctx.blocks) {
-        for (let item of block.items) {
-            if (item.name == "Balances.Transfer") {
-                let e = new BalancesTransferEvent(ctx, item.event)
-                let rec: {from: Uint8Array, to: Uint8Array, amount: bigint}
-                if (e.isV1020) {
-                    let [from, to, amount] = e.asV1020
-                    rec = { from, to, amount}
-                } else if (e.isV1050) {
-                    let [from, to, amount] = e.asV1050
-                    rec = { from, to, amount}
-                } else if (e.isV9130) {
-                    rec = e.asV9130
-                } else {
-                    throw new Error('Unsupported spec')
-                }
-                
-                transfers.push({
-                    id: item.event.id,
-                    blockNumber: block.header.height,
-                    timestamp: new Date(block.header.timestamp),
-                    extrinsicHash: item.event.extrinsic?.hash,
-                    from: ss58.codec('kusama').encode(rec.from),
-                    to: ss58.codec('kusama').encode(rec.to),
-                    amount: rec.amount,
-                    fee: item.event.extrinsic?.fee || 0n
-                })
-            }
+    let mints = new Map(records.map(rec => {
+        let account = accounts.get(rec.account)
+        if (account == null) {
+            account = new Account({id: rec.account})
+            accounts.set(rec.account, account)
         }
+        let tokenMint = new TokenMint({
+            ...rec,
+            account,
+        })
+        return [rec.id, tokenMint]
+    }))
+
+    for (let reply of replies) {
+        let tokenMint = mints.get(reply.message)
+        if (tokenMint == null) {
+            tokenMint = assertNotNull(await ctx.store.get(TokenMint, reply.message))
+        }
+        tokenMint.successful = reply.code == 0
+        mints.set(tokenMint.id, tokenMint)
     }
-    return transfers
+   */
+
+  let msgs = new Map(messages.map((rec) => {
+    /*
+        let account = accounts.get(rec.by)
+        if (account == null) {
+            account = new Account({id: rec.by})
+            accounts.set(rec.by, account)
+        }
+       */
+    let msg = new AddedMsg({
+      id: rec.id,
+      msg: rec.msg,
+      blockNumber: rec.blockNumber,
+      timestamp: rec.timestamp,
+      by: rec.by,
+    });
+    return [rec.id, msg];
+  }));
+
+  // await ctx.store.save([...accounts.values()])
+  await ctx.store.save([...msgs.values()]);
+});
+
+interface Message {
+  id: string;
+  msg: string;
+  by: string;
+  blockNumber: number;
+  timestamp: Date;
 }
 
+async function extractMessages(ctx: Ctx): Promise<{ messages: Message[] }> {
+  let messages: Message[] = [];
+  for (let block of ctx.blocks) {
+    for (let item of block.items) {
+      if (item.kind != "event") continue;
 
-function getAccount(m: Map<string, Account>, id: string): Account {
-    let acc = m.get(id)
-    if (acc == null) {
-        acc = new Account()
-        acc.id = id
-        m.set(id, acc)
+      ctx.log.info("item.event = " + JSON.stringify(item.event, null, "  "));
+
+      if (item.event.name == "Gear.UserMessageSent") {
+        let output = await decodeChatMsg(item.event.args.message.payload);
+        ctx.log.info("Added message: " + JSON.stringify(output, null, "  "));
+        if ("addedMsg" in output) {
+          messages.push({
+            id: item.event.args.message.id, // message_id
+            msg: output.addedMsg.msg,
+            by: output.addedMsg.by,
+            blockNumber: block.header.height,
+            timestamp: new Date(block.header.timestamp),
+          });
+        }
+      }
     }
-    return acc
+  }
+  return { messages };
 }
